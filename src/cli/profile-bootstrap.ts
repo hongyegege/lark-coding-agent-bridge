@@ -1,5 +1,6 @@
-import { mkdir, realpath } from 'node:fs/promises';
+import { access, mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ensureCursorWorkspace } from '../agent/cursor/workspace';
 import { AgentPreflightError } from '../agent/preflight';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
@@ -56,7 +57,14 @@ export async function resolveBootstrapWorkspace(workspace: string): Promise<stri
 
 async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
   await mkdir(path, { recursive: true, mode: 0o700 });
-  return realpath(path);
+  const resolved = await realpath(path);
+  const gitDir = join(resolved, '.git');
+  try {
+    await access(gitDir);
+  } catch {
+    await ensureCursorWorkspace(resolved);
+  }
+  return resolved;
 }
 
 export async function createBootstrapCodexConfig(binaryPath: string | undefined) {

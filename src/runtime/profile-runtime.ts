@@ -108,7 +108,9 @@ export async function resolveProfileRuntime(
   if (!profile && opts.allowBootstrap) {
     const detected = await detectInstalledAgents();
     if (detected.length === 0) {
-      throw new Error('no supported local agent found; install claude or codex first');
+      throw new Error(
+        'no supported local agent found; set CURSOR_API_KEY or install claude/codex first',
+      );
     }
     if (detected.length > 1) {
       const selected = await selectDetectedAgent(detected, opts.selectAgent);
@@ -123,7 +125,7 @@ export async function resolveProfileRuntime(
   if (!profile && !opts.allowBootstrap) {
     throw new Error('active profile is required');
   }
-  profile ??= 'claude';
+  profile ??= 'cursor';
   let appPaths = resolveAppPaths({ rootDir, profile });
   const configPath = opts.config ?? appPaths.configFile;
 
@@ -189,7 +191,7 @@ export async function resolveProfileRuntime(
     assertBootstrapAppMatchesExistingConfig(opts, profile, existing);
     const cfg = await maybeMigratePlaintextSecret(existing, configPath, appPaths);
     const profileConfig = createRuntimeProfileConfig({
-      agentKind: requestedAgent ?? 'claude',
+      agentKind: requestedAgent ?? 'cursor',
       accounts: cfg.accounts,
       preferences: cfg.preferences,
       secrets: cfg.secrets,
@@ -204,7 +206,7 @@ export async function resolveProfileRuntime(
   if (!opts.allowBootstrap) {
     throw new Error('config not initialized');
   }
-  const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
+  const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'cursor';
   const workspace = opts.workspace;
   const fresh = await resolveBootstrapAppConfig(opts);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
@@ -233,7 +235,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
   configPath: string;
 }): Promise<ProfileRuntime> {
   const { rootConfig, profile, requestedAgent, opts, appPaths, configPath } = args;
-  const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
+  const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'cursor';
   const workspace = opts.workspace;
   const fresh = await resolveBootstrapAppConfig(opts);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
@@ -395,7 +397,9 @@ function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  if (requestedAgent) return requestedAgent;
+  if (profile === 'codex' || profile === 'claude' || profile === 'cursor') return profile;
+  return undefined;
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -437,12 +441,12 @@ async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Pr
     }
     return runRegistrationWizard();
   }
-  let appSecret = opts.appSecret;
+  let appSecret = opts.appSecret ?? process.env.LARK_APP_SECRET?.trim();
   if (!appSecret) {
     if (!isInteractiveTerminal()) {
       throw new Error(
         `非交互模式缺少 App Secret: ${opts.appId}。` +
-          '请传入 --app-secret <secret>，或在终端中重新运行命令后按提示输入。',
+          '请传入 --app-secret <secret>、设置环境变量 LARK_APP_SECRET，或在终端中重新运行命令后按提示输入。',
       );
     }
     appSecret = await promptPassword(`输入 ${opts.appId} 的 App Secret: `);
@@ -568,7 +572,7 @@ function formatAmbiguousAgentSelectionError(
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
+    '检测到多个本地 agent，请使用 --agent <cursor|claude|codex> 指定要初始化哪一个。',
     '已检测到：',
     ...lines,
   ].join('\n');
@@ -613,6 +617,7 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
+  if (kind === 'cursor') return 'Cursor Agent';
   return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
 }
 

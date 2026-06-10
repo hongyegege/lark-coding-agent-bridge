@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import { claudeCapability, codexCapability, cursorCapability } from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -16,6 +16,22 @@ describe('agent capability contract', () => {
       callback: {
         marker: '__bridge_cb',
         legacyMarkers: ['__claude_cb'],
+      },
+    });
+  });
+
+  it('defines Cursor capability with session resume and append-system-prompt injection', () => {
+    const capability = cursorCapability();
+
+    expect(capability).toMatchObject({
+      agentId: 'cursor',
+      sessionKind: 'cursor-agent',
+      promptInjection: 'append-system-prompt',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      callback: {
+        marker: '__bridge_cb',
+        legacyMarkers: [],
       },
     });
   });

@@ -5,7 +5,7 @@ import type {
 } from '@larksuiteoapi/node-sdk';
 import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk';
 import { dirname, join } from 'node:path';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile, usesSessionResume } from '../agent/capability';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -256,6 +256,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         const mode = await chatModeCache.resolve(channel, firstMsg.chatId);
         await runAgentBatch({
           channel,
+          agent,
           executor,
           sessions,
           sessionCatalog,
@@ -600,6 +601,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
 interface RunBatchDeps {
   channel: LarkChannel;
+  agent: AgentAdapter;
   executor: RunExecutor;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
@@ -616,6 +618,7 @@ interface RunBatchDeps {
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const {
     channel,
+    agent,
     executor,
     sessions,
     sessionCatalog,
@@ -699,10 +702,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
-  const capability =
-    controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+  const capability = capabilityForProfile(controls.profileConfig);
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -745,6 +745,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('session', 'fresh', { cwd });
   }
   const recordSession = (evt: AgentEvent): void => {
+    if (evt.type === 'error' && capability.agentId === 'cursor') {
+      const prev = sessions.getRaw(scope);
+      if (prev?.sessionId) {
+        void agent.releaseSession?.(prev.sessionId).catch((err) => {
+          log.warn('session', 'release-failed', {
+            sessionId: prev.sessionId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+      sessions.clear(scope);
+      sessionCatalog?.archiveActive({
+        scopeId: scope,
+        agentId: capability.agentId,
+        cwdRealpath: flow.policy.cwdRealpath,
+        policyFingerprint: flow.policy.policyFingerprint,
+      });
+      log.info('session', 'cleared-after-error', { scope, agent: capability.agentId });
+    }
     recordRunSessionEvent({
       scopeId: scope,
       sessions,
@@ -1009,6 +1028,9 @@ async function processAgentStream(
       const prevTerminal = state.terminal;
       const prevFooter = state.footer;
       state = reduce(state, evt);
+      if (evt.type === 'error') {
+        recordSession(evt);
+      }
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }

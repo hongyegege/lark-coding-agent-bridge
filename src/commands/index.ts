@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile, usesSessionResume } from '../agent/capability';
+import { resolveCursorModelSelection } from '../agent/cursor/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -135,7 +136,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'cursor';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -308,6 +309,10 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
       ...ctx.sessionCatalogIdentity,
       now: Date.now(),
     });
+  }
+  const prev = ctx.sessions.getRaw(ctx.scope);
+  if (prev?.sessionId) {
+    await ctx.agent.releaseSession?.(prev.sessionId);
   }
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
@@ -597,12 +602,14 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        if (usesSessionResume(ctx.sessionCatalogIdentity.agentId)) {
+          ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        }
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
@@ -617,7 +624,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+    if (usesSessionResume(ctx.sessionCatalogIdentity.agentId)) {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
     await reply(ctx, RESUME_APPLIED_REPLY);
@@ -670,7 +677,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (usesSessionResume(identity.agentId) && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -733,7 +740,15 @@ function selectedResumeCwd(ctx: CommandContext): string | undefined {
 function runtimeAccessStatus(
   profileConfig: ProfileConfig,
 ): { label: string; value: string } {
-  if (profileConfig.agentKind === 'claude') {
+  if (profileConfig.agentKind === 'claude' || profileConfig.agentKind === 'cursor') {
+    if (profileConfig.agentKind === 'cursor') {
+      const selection = resolveCursorModelSelection();
+      const fast = selection.params?.find((p) => p.id === 'fast')?.value === 'true';
+      return {
+        label: 'model',
+        value: fast ? `${selection.id} (fast)` : selection.id,
+      };
+    }
     return {
       label: 'permission',
       value: accessToClaudePermissionMode(
@@ -1097,10 +1112,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = capabilityForProfile(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

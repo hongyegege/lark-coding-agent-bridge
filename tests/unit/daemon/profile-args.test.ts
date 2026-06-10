@@ -39,5 +39,9 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildUnit(inputs)).toContain('Environment="LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
     expect(buildLauncherCmd(inputs)).toContain('run --profile "codex-dev"');
     expect(buildLauncherCmd(inputs)).toContain('set "LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
+    expect(buildLauncherCmd(inputs)).toContain(':bridge_loop');
+    expect(buildLauncherCmd(inputs)).toContain('goto bridge_loop');
+    expect(buildLauncherCmd(inputs)).toContain('--skip-check-lark-cli');
+    expect(buildLauncherCmd(inputs)).toContain('LARK_BRIDGE_DAEMON=1');
   });
 });

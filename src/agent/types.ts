@@ -88,4 +88,6 @@ export interface AgentAdapter {
    * Adapters that don't bake identity into their prompts may omit it.
    */
   setBotIdentity?(identity: AgentBotIdentity): void;
+  /** Release a persisted agent handle (Cursor multi-turn sessions). */
+  releaseSession?(sessionId: string): Promise<void>;
 }

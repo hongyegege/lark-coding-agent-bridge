@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { AppPaths } from '../config/app-paths';
@@ -98,6 +98,31 @@ export function runtimeLockMetaFile(target: string): string {
   return `${target}.meta.json`;
 }
 
+/** Remove lock file + proper-lockfile companion + meta (after holder died abruptly). */
+export async function releaseStaleRuntimeLockFiles(target: string): Promise<void> {
+  await rm(runtimeLockMetaFile(target), { force: true });
+  await rm(`${target}.lock`, { force: true });
+  await rm(target, { force: true });
+}
+
+function lockHolderAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export async function releaseStaleRuntimeLocksIfDead(targets: string[]): Promise<void> {
+  for (const target of targets) {
+    const meta = await readRuntimeLockMeta(target);
+    if (meta && !lockHolderAlive(meta.pid)) {
+      await releaseStaleRuntimeLockFiles(target);
+    }
+  }
+}
+
 export async function readRuntimeLockMeta(target: string): Promise<RuntimeLockMeta | undefined> {
   try {
     const parsed = JSON.parse(await readFile(runtimeLockMetaFile(target), 'utf8')) as unknown;
@@ -178,7 +203,7 @@ function isRuntimeLockMeta(value: unknown): value is RuntimeLockMeta {
     (meta.kind === 'profile' || meta.kind === 'app') &&
     typeof meta.target === 'string' &&
     typeof meta.profile === 'string' &&
-    (meta.agentKind === 'claude' || meta.agentKind === 'codex') &&
+    (meta.agentKind === 'claude' || meta.agentKind === 'codex' || meta.agentKind === 'cursor') &&
     typeof meta.pid === 'number' &&
     typeof meta.startedAt === 'string' &&
     (meta.appId === undefined || typeof meta.appId === 'string')

@@ -6,9 +6,14 @@ import {
   daemonLogDir,
   daemonStderrPath,
   daemonStdoutPath,
-  windowsTaskName,
+  daemonStopFlagPath,
   windowsLauncherCmdPath,
+  windowsTaskName,
+  windowsWatchdogCmdPath,
+  windowsWatchdogTaskName,
 } from './paths';
+import * as watchdog from './schtasks-watchdog';
+import * as startup from './schtasks-startup';
 import { paths } from '../config/paths';
 
 export interface LauncherInputs {
@@ -22,6 +27,8 @@ export interface LauncherInputs {
   profile: string;
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Extra KEY=VALUE pairs baked into the launcher (Task Scheduler lacks full user env). */
+  extraEnv?: Record<string, string>;
 }
 
 /**
@@ -36,14 +43,57 @@ export interface LauncherInputs {
  * `>>` / `2>>` append (not truncate) so log history is preserved across
  * daemon restarts.
  */
+/** Backoff between crash restarts in launcher.cmd (aligns with systemd RestartSec=5). */
+export const DAEMON_RESTART_DELAY_SEC = 5;
+
+function cmdSetEnv(name: string, value: string): string {
+  // Escape embedded double-quotes for cmd.exe `set "NAME=VALUE"`.
+  return `set "${name}=${value.replace(/"/g, '""')}"`;
+}
+
 export function buildLauncherCmd(inputs: LauncherInputs): string {
+  const stderrLog = daemonStderrPath(inputs.profile);
+  const stdoutLog = daemonStdoutPath(inputs.profile);
+  const stopFlag = daemonStopFlagPath(inputs.profile);
+  const extraLines = Object.entries(inputs.extraEnv ?? {})
+    .filter(([, v]) => v.length > 0)
+    .map(([k, v]) => cmdSetEnv(k, v));
   return [
     '@echo off',
     `set "LARK_CHANNEL_HOME=${inputs.channelHome}"`,
     `set "PATH=${inputs.envPath}"`,
-    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run --profile "${inputs.profile}" >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
+    ...extraLines,
+    'set "LARK_BRIDGE_DAEMON=1"',
+    ':bridge_loop',
+    `if exist "${stopFlag}" del "${stopFlag}" & exit /b 0`,
+    `echo [%date% %time%] starting bridge >> "${stderrLog}"`,
+    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run --profile "${inputs.profile}" --skip-check-lark-cli >> "${stdoutLog}" 2>> "${stderrLog}"`,
+    `echo [%date% %time%] bridge exited, restart in ${DAEMON_RESTART_DELAY_SEC}s >> "${stderrLog}"`,
+    `timeout /t ${DAEMON_RESTART_DELAY_SEC} /nobreak >nul`,
+    'goto bridge_loop',
     '',
   ].join('\r\n');
+}
+
+/** Read a User-scope env var (Task Scheduler often omits these at runtime). */
+function readUserEnv(name: string): string | undefined {
+  if (process.platform !== 'win32') return process.env[name];
+  const r = spawnSync(
+    'powershell',
+    ['-NoProfile', '-Command', `[Environment]::GetEnvironmentVariable('${name}','User')`],
+    { encoding: 'utf8' },
+  );
+  const v = r.stdout?.trim();
+  return v || process.env[name]?.trim() || undefined;
+}
+
+function daemonExtraEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of ['CURSOR_API_KEY', 'CURSOR_MODEL', 'LARK_APP_SECRET'] as const) {
+    const v = readUserEnv(name);
+    if (v) out[name] = v;
+  }
+  return out;
 }
 
 async function writeLauncherCmd(profile: string): Promise<void> {
@@ -57,6 +107,7 @@ async function writeLauncherCmd(profile: string): Promise<void> {
     envPath: process.env.PATH ?? '',
     profile,
     channelHome: paths.rootDir,
+    extraEnv: daemonExtraEnv(),
   });
   const cmdPath = windowsLauncherCmdPath(profile);
   await mkdir(dirname(cmdPath), { recursive: true });
@@ -89,7 +140,7 @@ function runSchtasks(args: string[]): SchtasksResult {
  */
 export async function installTask(profile: string): Promise<SchtasksResult> {
   await writeLauncherCmd(profile);
-  return runSchtasks([
+  const main = runSchtasks([
     '/Create',
     '/F',
     '/SC',
@@ -101,6 +152,16 @@ export async function installTask(profile: string): Promise<SchtasksResult> {
     '/TR',
     `"${windowsLauncherCmdPath(profile)}"`,
   ]);
+  if (!main.ok) {
+    // schtasks often fails on managed PCs (access denied, GPO). Fall back to Startup folder.
+    await startup.installStartupFallback(profile);
+    return {
+      ok: true,
+      stderr: main.stderr,
+      stdout: 'fallback:startup-folder',
+    };
+  }
+  return watchdog.installWatchdogTask(profile);
 }
 
 /** Start the task now (regardless of trigger). */
@@ -178,10 +239,15 @@ export async function waitUntilStopped(profile: string, timeoutMs = 5000): Promi
 }
 
 export async function deleteTask(profile: string): Promise<SchtasksResult> {
+  await watchdog.deleteWatchdogTask(profile);
+  await startup.removeStartupFallback(profile);
   const r = runSchtasks(['/Delete', '/F', '/TN', windowsTaskName(profile)]);
   // Remove the launcher script too; best-effort.
   if (existsSync(windowsLauncherCmdPath(profile))) {
     await rm(windowsLauncherCmdPath(profile), { force: true });
+  }
+  if (existsSync(windowsWatchdogCmdPath(profile))) {
+    await rm(windowsWatchdogCmdPath(profile), { force: true });
   }
   return r;
 }

@@ -1,5 +1,6 @@
 import { isComplete } from '../../config/schema';
 import { createInterface } from 'node:readline';
+import { rm } from 'node:fs/promises';
 import { paths } from '../../config/paths';
 import { loadRootConfig, readActiveProfile } from '../../config/profile-store';
 import { daemonStderrPath, daemonStdoutPath } from '../../daemon/paths';
@@ -12,8 +13,8 @@ import {
   materializeEnvSecretForService,
   resolveProfileRuntime,
 } from '../../runtime/profile-runtime';
-import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
-import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
+import { readAndPrune, isAlive, type ProcessEntry } from '../../runtime/registry';
+import { checkRuntimeLock, releaseStaleRuntimeLockFiles, type RuntimeLockMeta } from '../../runtime/locks';
 import { preFlightChecks } from '../preflight';
 import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
@@ -88,6 +89,41 @@ function printServiceFailure(verb: 'started' | 'restarted', stderr: string): voi
     return;
   }
 
+  if (process.platform === 'win32') {
+    if (/access is denied|拒绝访问/i.test(cleaned)) {
+      console.error(`✗ bot ${action}失败: 无法创建或运行计划任务（拒绝访问）。`);
+      console.error('');
+      console.error('常见原因:');
+      console.error('  1. 公司组策略禁用了 Task Scheduler');
+      console.error('  2. 当前用户无权创建计划任务');
+      console.error('');
+      console.error('备用方案: 将 launcher.cmd 快捷方式放入「启动」文件夹:');
+      console.error('  %APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup');
+      console.error('  launcher 路径见 ~/.lark-channel/daemon/<profile>/launcher.cmd');
+      console.error('');
+      console.error('原始错误:');
+      console.error(`  ${cleaned}`);
+      return;
+    }
+    if (/already exists|已存在/i.test(cleaned)) {
+      console.error(`✗ bot ${action}失败: 计划任务已存在。`);
+      console.error('  请运行 `restart` 或先 `unregister` 再 `start`。');
+      console.error('');
+      console.error(`  ${cleaned}`);
+      return;
+    }
+    if (/cannot find|找不到|系统找不到/i.test(cleaned)) {
+      console.error(`✗ bot ${action}失败: 计划任务找不到 bridge 可执行文件。`);
+      console.error('');
+      console.error('请重新全局安装并注册服务:');
+      console.error('  npm i -g .');
+      console.error('  lark-cursor-bridge start');
+      console.error('');
+      console.error(`  ${cleaned}`);
+      return;
+    }
+  }
+
   console.error(`✗ bot ${action}失败:`);
   console.error(cleaned);
 }
@@ -131,6 +167,11 @@ async function assertLockNotHeldByAnotherRuntime(
     const lock = await checkRuntimeLock(target);
     if (!lock.locked) return;
 
+    if (lock.meta && !isAlive(lock.meta.pid)) {
+      await releaseStaleRuntimeLockFiles(target);
+      continue;
+    }
+
     const servicePid = adapter.isRunning() ? adapter.parseStatus(adapter.describeStatus()).pid : undefined;
     if (servicePid && lock.meta?.pid === Number(servicePid)) return;
 
@@ -146,6 +187,10 @@ async function assertLockNotHeldByAnotherRuntime(
     );
 
     if (!opts.confirmStopRuntimeLockProcess && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+      if (process.env.LARK_BRIDGE_DAEMON === '1' && lock.meta) {
+        await stopProcessEntry({ pid: lock.meta.pid });
+        continue;
+      }
       console.error(
         `  非交互模式无法确认停止 ${kind === 'profile' ? 'profile' : 'app'} 占用进程。` +
           '请先用 `lark-channel-bridge ps` 查看并用 `lark-channel-bridge kill <bot id>` 停止后重试。',
@@ -469,7 +514,7 @@ async function maybeResolveProfileRuntime(
 }
 
 function agentDisplay(agentKind: ProcessEntry['agentKind']): { id: string; displayName: string } {
-  return agentKind === 'codex'
-    ? { id: 'codex', displayName: 'Codex CLI' }
-    : { id: 'claude', displayName: 'Claude Code' };
+  if (agentKind === 'codex') return { id: 'codex', displayName: 'Codex CLI' };
+  if (agentKind === 'cursor') return { id: 'cursor', displayName: 'Cursor Agent' };
+  return { id: 'claude', displayName: 'Claude Code' };
 }

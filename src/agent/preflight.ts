@@ -1,6 +1,6 @@
 import { spawnProcess } from '../platform/spawn';
 
-export type LocalAgentId = 'claude' | 'codex';
+export type LocalAgentId = 'claude' | 'codex' | 'cursor';
 
 export type AgentPreflightErrorCode =
   | 'agent-binary-not-found'
@@ -11,7 +11,10 @@ export type AgentPreflightErrorCode =
   | 'agent-version-check-timeout'
   | 'agent-version-check-signaled'
   | 'agent-version-check-nonzero-exit'
-  | 'agent-version-check-empty-output';
+  | 'agent-version-check-empty-output'
+  | 'cursor-api-key-missing'
+  | 'cursor-sdk-unavailable'
+  | 'cursor-network-unavailable';
 
 export interface AgentPreflightDiagnostic {
   code: AgentPreflightErrorCode;
@@ -262,6 +265,28 @@ export function formatAgentPreflightDiagnostic(diagnostic: AgentPreflightDiagnos
         `请确认安装的是受支持的 ${diagnostic.agentName}。`,
         `错误码：${diagnostic.code}`,
       ].join('\n');
+    case 'cursor-api-key-missing':
+      return [
+        '✗ 未配置 Cursor API Key。',
+        '',
+        '请在 Cursor Dashboard → Integrations 创建 User API Key，',
+        '并设置用户环境变量 CURSOR_API_KEY 后重新运行 bridge。',
+        `错误码：${diagnostic.code}`,
+      ].join('\n');
+    case 'cursor-sdk-unavailable':
+      return [
+        '✗ @cursor/sdk 不可用。',
+        '',
+        '请重新安装 lark-cursor-bridge：`npm i -g .`',
+        `错误码：${diagnostic.code}`,
+      ].join('\n');
+    case 'cursor-network-unavailable':
+      return [
+        '✗ 无法连接 Cursor API（Network request failed）。',
+        '',
+        '请检查本机网络/代理能否访问 cursor.com，然后重启 bridge。',
+        `错误码：${diagnostic.code}`,
+      ].join('\n');
   }
 }
 
@@ -279,7 +304,7 @@ export function isAgentPreflightDiagnostic(input: unknown): input is AgentPrefli
   return (
     typeof raw.code === 'string' &&
     raw.code.startsWith('agent-') &&
-    (raw.agentId === 'claude' || raw.agentId === 'codex') &&
+    (raw.agentId === 'claude' || raw.agentId === 'codex' || raw.agentId === 'cursor') &&
     typeof raw.agentName === 'string' &&
     typeof raw.command === 'string'
   );

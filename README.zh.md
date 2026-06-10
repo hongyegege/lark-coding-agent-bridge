@@ -1,14 +1,113 @@
-# lark-channel-bridge
+# lark-cursor-bridge
 
-把飞书 / Lark 消息和本地 Claude Code 或 Codex CLI 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
+把飞书 / Lark 消息和本机 **Cursor Agent**（`@cursor/sdk` 本地 runtime）打通的轻量 bot。也仍支持 Claude Code / Codex CLI。用一条命令启动，绑定飞书 Bot 应用，然后在飞书里遥控本机 Agent 读图、处理文件、改代码。
 
 [English README](./README.md)
 
-关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
+## 项目来源
 
-## 主要功能
+本项目基于开源项目 [**lark-coding-agent-bridge**](https://github.com/zarazhangrui/lark-coding-agent-bridge) 进行优化与扩展，**原作者**：[zarazhangrui](https://github.com/zarazhangrui)。
 
-- 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI。
+| | 上游项目 | 本仓库（fork） |
+|---|----------|----------------|
+| **默认 Agent** | Claude Code / Codex | **Cursor Agent** |
+| **CLI 名称** | `lark-channel-bridge` | `lark-cursor-bridge`（保留旧名兼容） |
+| **额外能力** | — | Cursor SDK 集成、Windows 24/7 计划任务与看门狗 |
+
+感谢原作者的 bridge 架构、飞书流式卡片、会话模型与多 profile 设计。与本 fork（Cursor 渠道）相关的问题请在本仓库反馈；通用 bridge 行为仍可参考上游文档。
+
+产品效果概览见[飞书社区文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)。
+
+---
+
+## 开箱即用快速开始
+
+**目标：** 把仓库克隆到 PC，安装一次，几分钟内在飞书里和 bot 对话。
+
+### 方式 A — 让 AI Coding Agent 帮你配置（推荐）
+
+1. 将本仓库克隆到本机。
+2. 用 **Cursor**（或其他 AI coding agent）打开项目目录。
+3. 对 agent 说：**「请按 AGENTS.md 帮我完成 lark-cursor-bridge 的开箱即用配置」**。
+4. Agent 会分步引导你提供飞书 **App ID**、**App Secret**、**Cursor API Key**，并完成安装、构建与首次启动。
+
+面向 AI Agent 的完整操作手册：**[AGENTS.md](./AGENTS.md)**。
+
+### 方式 B — 手动配置（Cursor，推荐）
+
+#### 1. 部署前准备
+
+| 要求 | 说明 |
+|------|------|
+| Node.js **≥ 20.12.0** | 终端执行 `node -v` 确认 |
+| **Cursor User API Key** | [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations) 创建 |
+| **Cursor 桌面客户端** | SDK 依赖本地 runtime，需保持可用 |
+| **飞书 Bot 应用** | 企业自建应用，开通机器人 + 长连接事件 |
+
+设置 API Key（PowerShell，用户级，**重启终端**后生效）：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable('CURSOR_API_KEY', 'cursor_...', 'User')
+```
+
+可选模型（默认 `composer-2.5`）：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable('CURSOR_MODEL', 'composer-2.5', 'User')
+```
+
+#### 2. 从源码安装
+
+```powershell
+git clone <本仓库地址>
+cd lark-cursor-bridge
+npm install
+npm run build
+npm i -g .
+```
+
+> **Windows**：`@cursor/sdk` 依赖 `sqlite3` 原生模块。若 `npm install` 报 node-gyp / Python 错误，请安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（含 C++ 工作负载）后重试。
+
+#### 3. 首次前台运行
+
+已有飞书应用时：
+
+```powershell
+lark-cursor-bridge run --app-id cli_xxxxxxxx --agent cursor
+```
+
+未传 `--app-secret` 或环境变量 `LARK_APP_SECRET` 时，会交互提示输入 **App Secret**（请勿在日志中泄露）。
+
+或使用扫码向导（PersonalAgent）：
+
+```powershell
+lark-cursor-bridge run --agent cursor
+```
+
+首次成功会写入 `~/.lark-channel/config.json`。
+
+#### 4. 在飞书中使用
+
+1. 飞书 **私聊** bot。
+2. 发送 `/cd D:\你的项目路径`（或 macOS/Linux 绝对路径）指定工作区。
+3. 发送任务；回复以流式卡片展示。
+
+#### 5. 后台常驻（可选）
+
+前台联调正常后，`Ctrl-C` 停止，再注册服务：
+
+```powershell
+lark-cursor-bridge start --agent cursor --app-id cli_xxxxxxxx
+lark-cursor-bridge status
+```
+
+详见下文 [后台运行](#后台运行) 与 [Windows 24/7 常驻部署](#windows-247-常驻部署)。
+
+---
+
+## 功能特性
+
+- 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 **Cursor Agent** / Claude Code / Codex CLI。
 - **流式卡片**：文本回复和工具调用实时更新在同一张卡片上。
 - **会话延续**：每个聊天、话题或文档评论有自己的会话，不会互相串。
 - **排队与消息合并**：短时间连续发送的消息会合并处理；任务运行中收到的普通消息会排队到下一轮，`/new`、`/cd`、`/ws use`、`/stop` 这类命令可以中断当前任务。
@@ -16,29 +115,70 @@
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
 - **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
 
-## 前置条件
+## 应用场景
 
-- Node.js **>= 20.12.0**
-- 本机至少安装并登录一个 agent：
-  - Claude Code：`claude`，安装说明：https://docs.anthropic.com/en/docs/claude-code/quickstart
-  - Codex CLI：`codex`，安装说明：https://developers.openai.com/codex/cli
-- 一个飞书 / Lark PersonalAgent 应用。首次启动的扫码向导可以帮你创建并绑定。
+- **移动办公**：手机飞书发需求，本机 Agent 改代码、跑命令、看日志。
+- **个人助手**：默认仅创建者可用，私聊即可驱动本机开发环境。
+- **团队协作**：通过 `/invite` 开放指定同事或工作群。
+- **多 Agent 并行**：不同 profile 分别绑定 Cursor、Claude、Codex 与不同飞书应用。
+- **7×24 常驻**：注册系统服务后，脱离终端窗口持续运行（Windows 见计划任务章节）。
 
-## 安装
+## 部署要求
+
+### 运行环境
+
+- **Node.js** ≥ 20.12.0
+- **操作系统**：macOS、Linux、Windows 10+
+- **网络**：本机可访问飞书 Open API 与 WebSocket 长连接
+
+### Agent 依赖（三选一，默认 Cursor）
+
+| Agent | 要求 |
+|-------|------|
+| **Cursor（默认）** | `CURSOR_API_KEY` 环境变量；Cursor 桌面版运行中 |
+| Claude Code | 本机安装并登录 `claude` CLI |
+| Codex CLI | 本机安装并登录 `codex` CLI |
+
+### 飞书 Bot 应用要求
+
+在 [飞书开放平台](https://open.feishu.cn/app)（国际版 [Lark](https://open.larksuite.com/app)）创建 **企业自建应用**：
+
+- 启用 **机器人**、**长连接（WebSocket）** 接收事件
+- 事件订阅：`im.message.receive_v1`、卡片回调等
+- 开通消息收发、**CardKit 流式卡片** 相关权限
+- 记录 **App ID**（`cli_…`）与 **App Secret** 供 bridge 初始化
+
+身份策略推荐 **bot-only**（仅 App ID + Secret）。bridge 初始化 profile 时会配置 `lark-cli config strict-mode bot`。
+
+### 后台服务额外要求（Windows）
+
+| 用户级环境变量 | 用途 |
+|----------------|------|
+| `CURSOR_API_KEY` | Cursor SDK 认证 |
+| `LARK_APP_SECRET` | 非交互 `start` 必需 |
+| `CURSOR_MODEL` | 可选，默认 `composer-2.5` |
+| `CURSOR_MODEL_FAST` | 可选，设为 `1`/`true` 启用 Fast 模式；默认关闭 |
+
+`start` 注册 daemon 前须 **全局安装** CLI（`npm i -g .`），勿用 `npx` 路径。
+
+---
+
+## 安装（npm 全局）
 
 ```bash
-npm i -g lark-channel-bridge
-# 或
-pnpm add -g lark-channel-bridge
+npm i -g lark-cursor-bridge
+# 兼容旧命令名
+# npm i -g lark-channel-bridge
 ```
 
 ## 首次启动
 
 ```bash
-lark-channel-bridge run
+lark-cursor-bridge run
+# 或指定 agent：--agent cursor | claude | codex
 ```
 
-第一次运行会进入扫码向导：
+第一次运行会进入扫码向导（未传 `--app-id` 时）：
 
 1. 终端渲染二维码。
 2. 用飞书 App 扫码。
@@ -48,12 +188,11 @@ lark-channel-bridge run
 
 没有指定项目目录也可以启动。bridge 会创建一个 profile 托管的默认工作目录；启动后在飞书里发送 `/cd <path>` 切到实际项目。
 
-如果已经有 PersonalAgent app，可以在初始化时传 `--app-id` 跳过创建应用流程；命令会提示输入 App Secret。
+如果已经有应用凭据，可以在初始化时传 `--app-id`；命令会提示输入 App Secret。
 
 ```bash
-lark-channel-bridge run --app-id cli_xxx
-# 或直接初始化并启动后台服务
-lark-channel-bridge start --app-id cli_xxx
+lark-cursor-bridge run --app-id cli_xxx --agent cursor
+lark-cursor-bridge start --app-id cli_xxx --agent cursor
 ```
 
 Lark 国际版应用可加 `--tenant lark`。
@@ -63,9 +202,9 @@ Lark 国际版应用可加 `--tenant lark`。
 `run` 适合首次配置和前台调试。确认 bot 能正常收发消息后，先用 `Ctrl-C` 停掉前台进程，再用系统服务常驻后台：
 
 ```bash
-lark-channel-bridge start
-lark-channel-bridge status
-lark-channel-bridge stop
+lark-cursor-bridge start
+lark-cursor-bridge status
+lark-cursor-bridge stop
 ```
 
 服务层命令必须先全局安装，不能直接用 `npx`。daemon 的 launchd plist / systemd unit / Windows 任务会记录 bridge CLI 的路径；如果这个路径来自 npm 临时缓存，缓存清掉后 daemon 就起不来。`run` 用 `npx` 单次启动没问题。
@@ -73,11 +212,11 @@ lark-channel-bridge stop
 服务层命令按 profile 注册，每个 profile 有独立服务：
 
 ```bash
-lark-channel-bridge start [--profile <name>]
-lark-channel-bridge stop [--profile <name>]
-lark-channel-bridge restart [--profile <name>]
-lark-channel-bridge status [--profile <name>]
-lark-channel-bridge unregister [--profile <name>]
+lark-cursor-bridge start [--profile <name>]
+lark-cursor-bridge stop [--profile <name>]
+lark-cursor-bridge restart [--profile <name>]
+lark-cursor-bridge status [--profile <name>]
+lark-cursor-bridge unregister [--profile <name>]
 ```
 
 平台映射：
@@ -87,20 +226,86 @@ lark-channel-bridge unregister [--profile <name>]
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
-### 多 profile：分别运行 Claude 和 Codex
+### Windows 24/7 常驻部署
 
-默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：
+`run` 适合调试；确认飞书收发正常后，用 `start` 注册计划任务，Bridge 脱离终端窗口后台运行。
+
+**前置条件（User 级环境变量，计划任务运行时读不到未烘焙的变量）：**
+
+| 变量 | 用途 |
+|------|------|
+| `CURSOR_API_KEY` | Cursor SDK 认证 |
+| `LARK_APP_SECRET` | 飞书 Bot Secret（非交互 `start` 必需） |
+| `CURSOR_MODEL` | 可选，默认 `composer-2.5` |
+| `CURSOR_MODEL_FAST` | 可选，设为 `1`/`true` 启用 Fast 模式；默认关闭 |
+
+**全局安装（必须，`start` 会把 CLI 路径写入 launcher）：**
+
+```powershell
+cd <bridge-repo>
+npm run build
+npm i -g .
+```
+
+**注册并启动服务：**
+
+```powershell
+$env:LARK_APP_SECRET = [Environment]::GetEnvironmentVariable('LARK_APP_SECRET','User')
+lark-cursor-bridge start --profile cursor --agent cursor --skip-check-lark-cli
+lark-cursor-bridge status --profile cursor
+```
+
+**Windows 任务说明：**
+
+- 主任务 `LarkChannelBridge.Bot.<profile>`：用户登录时启动；`launcher.cmd` 内含崩溃重启循环（进程退出后 5 秒自动重拉）
+- 看门狗 `LarkChannelBridge.Watchdog.<profile>`：每 5 分钟检查主任务是否在跑，若已停止则自动 `/Run`
+- Launcher 脚本：`~/.lark-channel/daemon/<profile>/launcher.cmd`
+- 日志：`~/.lark-channel/profiles/<profile>/logs/daemon/daemon-stdout.log` 与 `daemon-stderr.log`
+
+**24/7 运行约束：**
+
+- 用户需至少登录一次 Windows（`ONLOGON` 触发）；锁屏期间 Bridge 可继续运行
+- Cursor 客户端需保持打开（SDK 依赖本地 runtime）
+- 电源选项设为「从不睡眠」；睡眠/休眠会断开网络与本地连接
+- 若需重启后无人值守：配置 Windows 自动登录 + Cursor 开机自启
+
+**日常运维：**
+
+```powershell
+lark-cursor-bridge status --profile cursor
+lark-cursor-bridge restart --profile cursor
+lark-cursor-bridge stop --profile cursor       # 停止并禁用自启
+lark-cursor-bridge unregister --profile cursor # 卸载计划任务
+```
+
+**升级 bridge 后：** 重新执行 `npm i -g .` 和 `lark-cursor-bridge start`，以刷新 launcher 中的 node/CLI 路径。
+
+**计划任务失败（拒绝访问）：** 公司策略可能禁用 Task Scheduler。`start` 会自动降级为 **「启动」文件夹 + 后台 launcher**（无需手动操作）。也可手动将 `launcher.cmd` 快捷方式放入：
+
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+```
+
+**验证清单：**
+
+1. 关闭所有运行 `run` 的终端 → 飞书仍可收发
+2. 锁屏 10 分钟后解锁 → 飞书仍可收发
+3. `taskkill /PID <bridge-pid> /F` 强杀 node 进程 → 5–10 秒内自动恢复（见 daemon-stderr.log 中的 `bridge exited, restart`）
+
+### 多 profile：分别运行 Cursor、Claude 和 Codex
+
+默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个应用，或分别运行不同 agent 时，才需要创建多个 profile：
 
 ```bash
-lark-channel-bridge start --profile claude --agent claude
-lark-channel-bridge start --profile codex --agent codex
+lark-cursor-bridge start --profile claude --agent claude
+lark-cursor-bridge start --profile codex --agent codex
 ```
 
 例如只重启 Codex bot：
 
 ```bash
-lark-channel-bridge restart --profile codex
-lark-channel-bridge status --profile codex
+lark-cursor-bridge restart --profile codex
+lark-cursor-bridge status --profile codex
 ```
 
 ## 命令速查
@@ -108,24 +313,24 @@ lark-channel-bridge status --profile codex
 ### 宿主 CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
-lark-channel-bridge ps
-lark-channel-bridge kill <id|#>
-lark-channel-bridge --help
+lark-cursor-bridge run [--profile <name>] [--agent cursor|claude|codex] [--workspace <path>] [-c <config>]
+lark-cursor-bridge migrate [--profile <name>] [--agent cursor|claude|codex]
+lark-cursor-bridge ps
+lark-cursor-bridge kill <id|#>
+lark-cursor-bridge --help
 ```
 
-`profile use <name>` 会切换后续默认启动使用的 profile。需要同时跑 Claude / Codex 两个 bot、连接多套 PersonalAgent 应用，或做脚本化部署时，再使用这些 profile 管理命令：
+`profile use <name>` 会切换后续默认启动使用的 profile。需要同时跑多个 bot、连接多套应用，或做脚本化部署时，再使用这些 profile 管理命令：
 
 ```bash
-lark-channel-bridge profile create claude --agent claude
-lark-channel-bridge profile create codex --agent codex
-lark-channel-bridge profile list
-lark-channel-bridge profile use <name>
-lark-channel-bridge profile remove <name>
-lark-channel-bridge profile remove <name> --purge --yes
-lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
-lark-channel-bridge profile export <name> --include-secrets --yes
+lark-cursor-bridge profile create cursor --agent cursor
+lark-cursor-bridge profile create codex --agent codex
+lark-cursor-bridge profile list
+lark-cursor-bridge profile use <name>
+lark-cursor-bridge profile remove <name>
+lark-cursor-bridge profile remove <name> --purge --yes
+lark-cursor-bridge profile export <name> [--output ./profile.json] [--force]
+lark-cursor-bridge profile export <name> --include-secrets --yes
 ```
 
 `profile remove` 默认归档本地状态，也可以删除当前激活的 profile。若还剩其他 profile，会自动切到下一个；若这是最后一个 profile，会清空 root config，之后可以用同名重新创建。只有加 `--purge --yes` 才会永久删除。`profile export` 默认脱敏 app secret；只有加 `--include-secrets --yes` 才会导出敏感配置。
@@ -175,7 +380,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 ```json
 {
   "workspaces": {
-    "default": "/Users/me/.lark-channel-workspaces/claude/default"
+    "default": "/Users/me/.lark-channel-workspaces/cursor/default"
   }
 }
 ```
@@ -267,8 +472,8 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 {
   "schemaVersion": 2,
   "profiles": {
-    "claude": {
-      "agentKind": "claude",
+    "cursor": {
+      "agentKind": "cursor",
       "access": {
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
@@ -294,7 +499,9 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 ## 常见问题
 
-**bot 没反应 / agent 不回复**：通常是本机 `claude` 或 `codex` CLI 没登录，或者当前会话指向了不存在的工作目录。发 `/status` 看当前状态；`/new` 重开会话往往就好。
+**bot 没反应 / agent 不回复**：检查 `CURSOR_API_KEY` 或本机 `claude` / `codex` CLI 是否就绪；当前会话工作目录是否存在。发 `/status` 看当前状态；`/new` 重开会话往往就好。
+
+**Cursor 相关**：确保 Cursor 桌面客户端已打开；SDK 使用本地 runtime。
 
 **agent 子进程假死（卡片停在最后一帧不动）**：支持 idle 探活。agent 一段时间没输出就会被 SIGTERM kill，卡片末尾会标出自动终止原因。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前会话生效；`/timeout off` 关掉当前会话的探活；`/timeout default` 清掉会话覆盖，回退到全局设置。
 
@@ -319,13 +526,13 @@ pnpm build
 想接自己的监控时，用环境变量指向一个 default export（或导出 `createAdapter`）`AdapterFactory` 的模块：
 
 ```bash
-LARK_CHANNEL_TELEMETRY_MODULE=your-telemetry-package lark-channel-bridge start
+LARK_CHANNEL_TELEMETRY_MODULE=your-telemetry-package lark-cursor-bridge start
 ```
 
 该模块会收到每一条 `log.*` 事件，以及错误 / 指标钩子，转发到任何你想要的地方。接口从包根导出：
 
 ```ts
-import type { AdapterFactory, TelemetryAdapter, TelemetryEvent } from 'lark-channel-bridge';
+import type { AdapterFactory, TelemetryAdapter, TelemetryEvent } from 'lark-cursor-bridge';
 
 const createAdapter: AdapterFactory = (meta) => ({
   emit(event) {/* 上报事件 */},
@@ -338,8 +545,10 @@ export default createAdapter;
 
 模块不存在、工厂函数不合法、或者 adapter 抛错，都会降级为空操作——遥测永远不会阻止 bridge 启动，也不会打断日志。
 
-## 许可
+## 许可与致谢
 
 [MIT](./LICENSE)
+
+基于 [**lark-coding-agent-bridge**](https://github.com/zarazhangrui/lark-coding-agent-bridge)（作者 [**zarazhangrui**](https://github.com/zarazhangrui)）优化扩展。
 
 <img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">

@@ -79,6 +79,24 @@ export function windowsLauncherCmdPath(profile: string = paths.profile): string 
   return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launcher.cmd');
 }
 
+export function windowsWatchdogTaskName(profile: string = paths.profile): string {
+  return `LarkChannelBridge.Watchdog.${serviceProfileId(profile)}`;
+}
+
+export function windowsWatchdogCmdPath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'watchdog.cmd');
+}
+
+/** Flag file written by `stop`; launcher exits cleanly on next loop iteration. */
+export function daemonStopFlagPath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'stop.flag');
+}
+
+/** PID of the detached cmd.exe running launcher.cmd (Startup fallback mode). */
+export function daemonLauncherPidPath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launcher.pid');
+}
+
 // === Daemon log paths (platform-agnostic) ===
 
 /**

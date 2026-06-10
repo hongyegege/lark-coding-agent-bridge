@@ -1,7 +1,10 @@
 import * as launchd from './launchd';
-import { launchAgentPlistPath, systemdUnitPath, windowsTaskName } from './paths';
+import { launchAgentPlistPath, systemdUnitPath, windowsLauncherCmdPath, windowsTaskName } from './paths';
 import * as schtasks from './schtasks';
+import * as startup from './schtasks-startup';
 import * as systemd from './systemd';
+import { isAlive, readAndPrune } from '../runtime/registry';
+import { stopProcessEntry } from '../cli/commands/ps';
 
 export interface ServiceResult {
   ok: boolean;
@@ -117,10 +120,14 @@ function makeSystemdAdapter(profile: string): ServiceAdapter {
 }
 
 function makeSchtasksAdapter(profile: string): ServiceAdapter {
+  const isBridgeProcessAlive = (): boolean =>
+    readAndPrune().some((e) => e.profileName === profile && isAlive(e.pid));
+
   return {
     platformName: 'Task Scheduler (Windows)',
-    fileExists: () => schtasks.isTaskRegistered(profile),
-    isRunning: () => schtasks.isTaskRunning(profile),
+    fileExists: () =>
+      schtasks.isTaskRegistered(profile) || startup.isStartupFallbackInstalled(profile),
+    isRunning: () => schtasks.isTaskRunning(profile) || isBridgeProcessAlive(),
     // Windows doesn't have a single "service file" — there's the task
     // registration (queryable via schtasks) and the launcher .cmd we wrote.
     // The task name is what the user would search for in Task Scheduler UI.
@@ -128,12 +135,54 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
     install: async () => {
       const r = await schtasks.installTask(profile);
       if (!r.ok) throw new Error(r.stderr || 'schtasks /Create failed');
+      if (r.stdout === 'fallback:startup-folder') {
+        console.log('⚠ 计划任务被拒绝访问，已改用「启动」文件夹自启 + 后台 launcher。');
+        console.log(`  Startup: ${startup.startupCmdPath(profile)}`);
+        console.log(`  Launcher: ${windowsLauncherCmdPath(profile)}`);
+      }
     },
-    start: () => schtasks.runTask(profile),
-    stop: () => schtasks.endTask(profile),
-    stopAndDisableAutostart: () => schtasks.endAndDisable(profile),
-    // schtasks has no native /Restart — adapter awaits end+wait+run.
-    restart: () => schtasks.restartTask(profile),
+    start: () => {
+      if (schtasks.isTaskRegistered(profile)) return schtasks.runTask(profile);
+      if (startup.isStartupFallbackInstalled(profile)) {
+        if (!startup.isLauncherRunning(profile)) {
+          startup.startLauncherDetached(profile);
+        }
+        return { ok: true, stderr: '' };
+      }
+      return schtasks.runTask(profile);
+    },
+    stop: () => {
+      if (schtasks.isTaskRegistered(profile)) return schtasks.endTask(profile);
+      void startup.requestLauncherStop(profile);
+      for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {
+        void stopProcessEntry({ pid: e.pid });
+      }
+      return { ok: true, stderr: '' };
+    },
+    stopAndDisableAutostart: async () => {
+      if (startup.isStartupFallbackInstalled(profile)) {
+        await startup.requestLauncherStop(profile);
+        for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {
+          await stopProcessEntry({ pid: e.pid });
+        }
+        await startup.waitUntilLauncherStopped(profile);
+        await startup.removeStartupFallback(profile);
+        return { ok: true, stderr: '' };
+      }
+      return schtasks.endAndDisable(profile);
+    },
+    restart: async () => {
+      if (startup.isStartupFallbackInstalled(profile) && !schtasks.isTaskRegistered(profile)) {
+        await startup.requestLauncherStop(profile);
+        for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {
+          await stopProcessEntry({ pid: e.pid });
+        }
+        await startup.waitUntilLauncherStopped(profile);
+        startup.startLauncherDetached(profile);
+        return { ok: true, stderr: '' };
+      }
+      return schtasks.restartTask(profile);
+    },
     waitUntilStopped: (timeoutMs) => schtasks.waitUntilStopped(profile, timeoutMs),
     deleteFile: async () => {
       await schtasks.deleteTask(profile);

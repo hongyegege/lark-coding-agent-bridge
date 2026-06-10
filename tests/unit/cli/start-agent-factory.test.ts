@@ -10,7 +10,20 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import { createRuntimeProfileConfig } from '../../../src/runtime/profile-runtime.js';
 
 describe('start runtime agent factory', () => {
-  it('keeps Claude as the default runtime agent', () => {
+  it('creates CursorAdapter as the default cursor runtime agent', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'cursor',
+        accounts: appAccount(),
+      }),
+      { profileDir: tmpdir() },
+    );
+
+    expect(agent.id).toBe('cursor');
+    expect(agent.displayName).toBe('Cursor Agent');
+  });
+
+  it('keeps Claude as an explicit runtime agent', () => {
     const agent = createRuntimeAgent(
       createDefaultProfileConfig({
         agentKind: 'claude',

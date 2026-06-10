@@ -28,8 +28,8 @@ import { runStart } from './commands/start';
 const program = new Command();
 
 program
-  .name('lark-channel-bridge')
-  .description('Bridge Feishu/Lark messenger with local CLI coding agents')
+  .name('lark-cursor-bridge')
+  .description('Bridge Feishu/Lark messenger with Cursor Agent (local SDK runtime)')
   .version(pkg.version, '-v, --version');
 
 // === process-level commands (work directly on bridge processes) ===
@@ -39,7 +39,7 @@ program
   .description('Run the bridge in the foreground (was `start` in older versions)')
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'profile name to run')
-  .option('--agent <kind>', 'agent kind for a new profile (claude or codex)')
+  .option('--agent <kind>', 'agent kind for a new profile (cursor, claude, or codex)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -63,7 +63,7 @@ program
   .description('Migrate legacy bridge config/state into the current profile layout')
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'target profile name for legacy v1 config migration')
-  .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude or codex)')
+  .option('--agent <kind>', 'agent kind for legacy v1 profile migration (cursor, claude, or codex)')
   .action(async (opts: { config?: string; profile?: string; agent?: string }) => {
     await runMigrate(opts);
   });
@@ -82,7 +82,7 @@ profile
 profile
   .command('create <name>')
   .description('Create a profile from QR registration or existing app credentials')
-  .option('--agent <kind>', 'agent kind (claude or codex)')
+  .option('--agent <kind>', 'agent kind (cursor, claude, or codex)')
   .option('--workspace <path>', 'initial working directory for this profile')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -154,7 +154,7 @@ program
   .command('start')
   .description('Install (if needed) and start the bridge as an OS-managed daemon')
   .option('--profile <name>', 'profile name (defaults to active profile)')
-  .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude or codex)')
+  .option('--agent <kind>', 'agent kind for first-run profile bootstrap (cursor, claude, or codex)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')

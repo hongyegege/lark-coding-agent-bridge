@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { CursorAdapter } from '../../agent/cursor/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -27,6 +28,7 @@ import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 import {
   cleanupTmpFiles,
+  isAlive,
   register,
   sameAppLiveOthers,
   unregisterSync,
@@ -36,6 +38,8 @@ import {
 import {
   acquireAppRuntimeLock,
   RuntimeLockConflictError,
+  releaseStaleRuntimeLockFiles,
+  releaseStaleRuntimeLocksIfDead,
   withProfileAndAppLocks,
   type AcquiredRuntimeLock,
   type RuntimeLockMeta,
@@ -120,6 +124,13 @@ export async function runStart(opts: StartOptions): Promise<void> {
     hostname: os.hostname(),
   });
 
+  if (process.env.LARK_BRIDGE_DAEMON === '1') {
+    await releaseStaleRuntimeLocksIfDead([
+      appPaths.profileLockFile,
+      appPaths.appLockFile(cfg.accounts.app.id),
+    ]);
+  }
+
   let agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath });
   const availability = await checkRuntimeAgentAvailability(agent);
   if (!availability.ok) {
@@ -134,7 +145,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
       await withProfileAndAppLocks(
         appPaths,
         cfg.accounts.app.id,
-        cfg.agentKind ?? 'claude',
+        cfg.agentKind ?? 'cursor',
         async (locks) => {
           runtimeLocks = locks;
           const sessions = new SessionStore(appPaths.sessionsFile);
@@ -170,7 +181,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           appId: cfg.accounts.app.id,
           tenant: cfg.accounts.app.tenant,
           profileName: appPaths.profile,
-          agentKind: cfg.agentKind ?? 'claude',
+          agentKind: cfg.agentKind ?? 'cursor',
           configPath,
           version: pkg.version,
           registryFile: appPaths.userRegistryFile,
@@ -252,7 +263,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   nextAppLock = await acquireAppRuntimeLock(
                     nextRuntime.appPaths,
                     next.accounts.app.id,
-                    next.agentKind ?? 'claude',
+                    next.agentKind ?? 'cursor',
                   );
                 }
                 console.log(
@@ -374,9 +385,10 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId:
+      agent.id === 'codex' ? ('codex' as const) : agent.id === 'cursor' ? ('cursor' as const) : ('claude' as const),
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id === 'codex' ? 'codex' : agent.id === 'cursor' ? 'CURSOR_API_KEY' : 'claude',
   };
   return {
     ok: false,
@@ -389,8 +401,8 @@ export function assertReconnectAgentKindUnchanged(
   current: AgentKind | undefined,
   next: AgentKind | undefined,
 ): void {
-  const currentKind = current ?? 'claude';
-  const nextKind = next ?? 'claude';
+  const currentKind = current ?? 'cursor';
+  const nextKind = next ?? 'cursor';
   if (nextKind !== currentKind) {
     throw new Error(
       `agent kind cannot change during reconnect (${currentKind} -> ${nextKind}); stop/start is required`,
@@ -434,6 +446,9 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
+  if (profileConfig.agentKind === 'cursor') {
+    return new CursorAdapter();
+  }
   return new ClaudeAdapter({ larkChannel });
 }
 
@@ -458,6 +473,12 @@ async function resolveConflict(conflicts: ProcessEntry[]): Promise<boolean> {
   console.log('');
 
   if (!process.stdin.isTTY) {
+    if (process.env.LARK_BRIDGE_DAEMON === '1') {
+      for (const e of conflicts) {
+        await stopProcessEntry({ pid: e.pid });
+      }
+      return true;
+    }
     console.warn(
       '⚠️  当前不是交互式启动,已自动取消。如需替换,先用 `kill <bot id>` 关掉旧的。\n',
     );
@@ -508,6 +529,12 @@ async function handleRuntimeLockConflict(
     return 'unhandled';
   }
 
+  // Daemon launcher: non-interactive auto-replace stale holder (aligns with resolveConflict).
+  if (process.env.LARK_BRIDGE_DAEMON === '1' && err.meta && !isAlive(err.meta.pid)) {
+    await releaseStaleRuntimeLockFiles(err.target);
+    return 'retry';
+  }
+
   const confirmed = opts.confirmStopRuntimeLockProcess
     ? await opts.confirmStopRuntimeLockProcess(err)
     : await confirmStopRuntimeLockProcess(err);
@@ -529,6 +556,7 @@ async function handleRuntimeLockConflict(
 
 async function confirmStopRuntimeLockProcess(err: RuntimeLockConflictError): Promise<boolean> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    if (process.env.LARK_BRIDGE_DAEMON === '1') return true;
     throw new Error(
       `当前 ${err.kind === 'profile' ? 'profile' : 'app'} 已有 bridge 进程占用；` +
         '非交互模式无法确认停止，请先用 `lark-channel-bridge ps` 查看并用 `lark-channel-bridge kill <bot id>` 停止后重试',
