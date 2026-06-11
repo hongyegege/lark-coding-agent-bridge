@@ -4,6 +4,8 @@ import { rm } from 'node:fs/promises';
 import { paths } from '../../config/paths';
 import { loadRootConfig, readActiveProfile } from '../../config/profile-store';
 import { daemonStderrPath, daemonStdoutPath } from '../../daemon/paths';
+import { readServiceState } from '../../daemon/service-state';
+import * as startup from '../../daemon/schtasks-startup';
 import {
   getServiceAdapter,
   type ServiceAdapter,
@@ -374,14 +376,15 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
 export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<void> {
   const profile = await resolveServiceProfile(opts.profile);
   const adapter = requireAdapter('stop', profile);
-  if (!adapter.fileExists()) {
+  const hasInstall = adapter.fileExists();
+  const hasOrphanStartup =
+    process.platform === 'win32' && startup.isStartupFallbackInstalled(profile);
+  if (!hasInstall && !hasOrphanStartup) {
     console.log('bot 还没在后台运行过,无需停止。');
     return;
   }
-  if (!adapter.isRunning()) {
-    console.log('bot 当前没在后台运行。');
-    return;
-  }
+
+  const wasRunning = adapter.isRunning();
 
   // Snapshot bot info BEFORE stop so the success message can name
   // exactly which bot got stopped. Reading after would race the
@@ -397,12 +400,14 @@ export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<
     console.error(`✗ 停止失败:\n${formatServiceStderr(r.stderr)}`);
     process.exit(1);
   }
-  if (entry) {
+  if (entry && wasRunning) {
     console.log(`✓ bot ${entry.botName} (${entry.appId}) 已停止运行`);
-  } else {
+  } else if (wasRunning) {
     console.log('✓ bot 已停止运行');
+  } else {
+    console.log('✓ bot 已停用（未在运行，已清除自启）');
   }
-  console.log('  通过 `start` 可再次重启');
+  console.log('  通过 `start` 或桌面「启用飞书 Bot」可再次开启');
 }
 
 /**
@@ -434,9 +439,14 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
     console.log('  通过 `start` 启动 bot');
     return;
   }
+  const serviceState = await readServiceState(profile);
   if (!adapter.isRunning()) {
-    console.log('bot 当前没在后台运行');
-    console.log('  通过 `start` 重新启动');
+    if (serviceState === 'disabled') {
+      console.log('bot 已停用（不会自动启动）');
+    } else {
+      console.log('bot 当前没在后台运行');
+    }
+    console.log('  通过 `start` 或桌面「启用飞书 Bot」重新启动');
     return;
   }
 
@@ -488,7 +498,7 @@ export async function runServiceUnregister(opts: ServiceProfileOptions = {}): Pr
   console.log(`  (配置 / 日志 / 会话保留在 ${paths.rootDir})`);
 }
 
-async function resolveServiceProfile(explicitProfile: string | undefined): Promise<string> {
+export async function resolveServiceProfile(explicitProfile: string | undefined): Promise<string> {
   if (explicitProfile) return explicitProfile;
   const root = await loadRootConfig(paths.configFile);
   const profile = (await readActiveProfile(paths.rootDir)) ?? root?.activeProfile;

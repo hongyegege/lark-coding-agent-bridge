@@ -3,6 +3,7 @@ import { launchAgentPlistPath, systemdUnitPath, windowsLauncherCmdPath, windowsT
 import * as schtasks from './schtasks';
 import * as startup from './schtasks-startup';
 import * as systemd from './systemd';
+import { writeServiceState } from './service-state';
 import { isAlive, readAndPrune } from '../runtime/registry';
 import { stopProcessEntry } from '../cli/commands/ps';
 
@@ -135,13 +136,15 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
     install: async () => {
       const r = await schtasks.installTask(profile);
       if (!r.ok) throw new Error(r.stderr || 'schtasks /Create failed');
+      await writeServiceState(profile, 'enabled');
       if (r.stdout === 'fallback:startup-folder') {
         console.log('⚠ 计划任务被拒绝访问，已改用「启动」文件夹自启 + 后台 launcher。');
         console.log(`  Startup: ${startup.startupCmdPath(profile)}`);
         console.log(`  Launcher: ${windowsLauncherCmdPath(profile)}`);
       }
     },
-    start: () => {
+    start: async () => {
+      await writeServiceState(profile, 'enabled');
       if (schtasks.isTaskRegistered(profile)) return schtasks.runTask(profile);
       if (startup.isStartupFallbackInstalled(profile)) {
         if (!startup.isLauncherRunning(profile)) {
@@ -160,18 +163,20 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
       return { ok: true, stderr: '' };
     },
     stopAndDisableAutostart: async () => {
-      if (startup.isStartupFallbackInstalled(profile)) {
-        await startup.requestLauncherStop(profile);
-        for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {
-          await stopProcessEntry({ pid: e.pid });
-        }
-        await startup.waitUntilLauncherStopped(profile);
-        await startup.removeStartupFallback(profile);
-        return { ok: true, stderr: '' };
+      await writeServiceState(profile, 'disabled');
+      await startup.requestLauncherStop(profile);
+      for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {
+        await stopProcessEntry({ pid: e.pid });
       }
-      return schtasks.endAndDisable(profile);
+      await startup.waitUntilLauncherStopped(profile);
+      await startup.removeStartupFallback(profile);
+      if (schtasks.isTaskRegistered(profile)) {
+        return schtasks.endAndDisable(profile);
+      }
+      return { ok: true, stderr: '' };
     },
     restart: async () => {
+      await writeServiceState(profile, 'enabled');
       if (startup.isStartupFallbackInstalled(profile) && !schtasks.isTaskRegistered(profile)) {
         await startup.requestLauncherStop(profile);
         for (const e of readAndPrune().filter((x) => x.profileName === profile && isAlive(x.pid))) {

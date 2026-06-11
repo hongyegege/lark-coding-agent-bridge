@@ -1,10 +1,17 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isAlive } from '../runtime/registry';
-import { daemonLauncherPidPath, daemonStopFlagPath, windowsLauncherCmdPath } from './paths';
+import {
+  daemonLauncherPidPath,
+  daemonServiceStatePath,
+  daemonStopFlagPath,
+  launchHiddenVbsPath,
+  windowsLauncherCmdPath,
+} from './paths';
+import { buildDisabledStateCheckCmd } from './service-state';
 
 /** Startup folder .cmd that launches the daemon launcher on user logon. */
 export function startupCmdPath(profile: string): string {
@@ -19,22 +26,49 @@ export function startupCmdPath(profile: string): string {
   return join(startupDir, `LarkChannelBridge.${profile}.cmd`);
 }
 
+/** VBScript that runs launcher.cmd with WindowStyle=0 (fully hidden). */
+export function buildLaunchHiddenVbs(launcherPath: string): string {
+  const escaped = launcherPath.replace(/"/g, '""');
+  return ['Set sh = CreateObject("WScript.Shell")', `sh.Run """${escaped}""", 0, False`, ''].join(
+    '\r\n',
+  );
+}
+
+export interface StartupCmdInputs {
+  vbsPath: string;
+  statePath: string;
+}
+
 /**
  * Fallback when schtasks is blocked: a tiny script in the Startup folder
- * that invokes the full launcher.cmd (with crash-restart loop).
+ * that invokes launch-hidden.vbs (no visible console window).
  */
-export function buildStartupCmd(launcherPath: string): string {
-  return ['@echo off', `start "" /MIN "${launcherPath}"`, ''].join('\r\n');
+export function buildStartupCmd(inputs: StartupCmdInputs): string {
+  return [
+    '@echo off',
+    buildDisabledStateCheckCmd(inputs.statePath),
+    `wscript.exe //B //Nologo "${inputs.vbsPath}"`,
+    '',
+  ].join('\r\n');
 }
 
 export async function installStartupFallback(profile: string): Promise<void> {
   const launcherPath = windowsLauncherCmdPath(profile);
+  const vbsPath = launchHiddenVbsPath(profile);
   if (!existsSync(launcherPath)) {
     throw new Error(`launcher.cmd 不存在: ${launcherPath}，请先运行 start 或手动 build launcher`);
   }
+  if (!existsSync(vbsPath)) {
+    await mkdir(dirname(vbsPath), { recursive: true });
+    await writeFile(vbsPath, buildLaunchHiddenVbs(launcherPath), 'utf8');
+  }
   const startupPath = startupCmdPath(profile);
-  await mkdir(join(startupPath, '..'), { recursive: true });
-  await writeFile(startupPath, buildStartupCmd(launcherPath), 'utf8');
+  await mkdir(dirname(startupPath), { recursive: true });
+  await writeFile(
+    startupPath,
+    buildStartupCmd({ vbsPath, statePath: daemonServiceStatePath(profile) }),
+    'utf8',
+  );
 }
 
 export async function removeStartupFallback(profile: string): Promise<void> {
@@ -74,11 +108,15 @@ async function clearLauncherPid(profile: string): Promise<void> {
   if (existsSync(path)) await rm(path, { force: true });
 }
 
-/** Start launcher.cmd detached from the current terminal (background daemon). */
+/** Start launcher via hidden VBS wrapper, detached from the current terminal. */
 export function startLauncherDetached(profile: string): void {
   if (isLauncherRunning(profile)) return;
+  const vbsPath = launchHiddenVbsPath(profile);
   const launcherPath = windowsLauncherCmdPath(profile);
-  const child = spawn('cmd.exe', ['/c', launcherPath], {
+  if (!existsSync(vbsPath) && existsSync(launcherPath)) {
+    void writeFile(vbsPath, buildLaunchHiddenVbs(launcherPath), 'utf8');
+  }
+  const child = spawn('wscript.exe', ['//B', '//Nologo', vbsPath], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -103,6 +141,6 @@ export async function waitUntilLauncherStopped(profile: string, timeoutMs = 8000
 /** Signal the launcher loop to exit on its next iteration. */
 export async function requestLauncherStop(profile: string): Promise<void> {
   const flag = daemonStopFlagPath(profile);
-  await mkdir(join(flag, '..'), { recursive: true });
+  await mkdir(dirname(flag), { recursive: true });
   await writeFile(flag, '', 'utf8');
 }

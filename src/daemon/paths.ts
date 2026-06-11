@@ -97,6 +97,16 @@ export function daemonLauncherPidPath(profile: string = paths.profile): string {
   return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launcher.pid');
 }
 
+/** Persistent enabled/disabled flag for user-controlled autostart (Windows). */
+export function daemonServiceStatePath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'service.state');
+}
+
+/** VBScript wrapper that launches launcher.cmd with a hidden window (WindowStyle=0). */
+export function launchHiddenVbsPath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launch-hidden.vbs');
+}
+
 // === Daemon log paths (platform-agnostic) ===
 
 /**

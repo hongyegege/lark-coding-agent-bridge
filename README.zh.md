@@ -269,6 +269,27 @@ lark-cursor-bridge status --profile cursor
 - 电源选项设为「从不睡眠」；睡眠/休眠会断开网络与本地连接
 - 若需重启后无人值守：配置 Windows 自动登录 + Cursor 开机自启
 
+**启用 / 停用飞书 Bot（推荐）：**
+
+后台 daemon 运行时**没有可见窗口**。不要用关闭 CMD 窗口来停用 Bot——关闭窗口后 launcher 会在约 5 秒内自动重启并可能再次弹出窗口。
+
+```powershell
+# 一次性在桌面创建两个快捷方式
+lark-cursor-bridge shortcuts install --profile cursor
+
+# 或命令行
+lark-cursor-bridge start --profile cursor   # 启用：无窗口后台 + 登录自启
+lark-cursor-bridge stop --profile cursor    # 停用：停止进程 + 取消自启
+```
+
+| 操作 | 效果 |
+|------|------|
+| `start` / 桌面「启用飞书 Bot」 | 无窗口后台运行；写入 Startup；登录后自动启动 |
+| `stop` / 桌面「停用飞书 Bot」 | 停止 launcher 与 bridge；移除 Startup；`service.state=disabled` |
+| 前台 `run` | 仅调试用，会显示 CMD 窗口；与 daemon 不要同时运行 |
+
+状态文件：`~/.lark-channel/daemon/<profile>/service.state`（`enabled` / `disabled`）
+
 **日常运维：**
 
 ```powershell

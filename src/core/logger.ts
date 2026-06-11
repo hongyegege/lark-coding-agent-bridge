@@ -281,6 +281,7 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   // Stdout is the user-facing tail: warns, errors, and a curated list
   // of info events (WS lifecycle, message intake, run final). The full
   // detail always lives in the file regardless.
+  if (process.env.LARK_BRIDGE_DAEMON === '1') return;
   const showOnStdout =
     level !== 'info' || STDOUT_INFO_ALLOWLIST.has(`${phase}.${event}`);
   if (!showOnStdout) return;

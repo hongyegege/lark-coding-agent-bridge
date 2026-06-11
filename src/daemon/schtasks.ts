@@ -4,14 +4,17 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   daemonLogDir,
+  daemonServiceStatePath,
   daemonStderrPath,
   daemonStdoutPath,
   daemonStopFlagPath,
+  launchHiddenVbsPath,
   windowsLauncherCmdPath,
   windowsTaskName,
   windowsWatchdogCmdPath,
   windowsWatchdogTaskName,
 } from './paths';
+import { buildDisabledStateCheckCmd } from './service-state';
 import * as watchdog from './schtasks-watchdog';
 import * as startup from './schtasks-startup';
 import { paths } from '../config/paths';
@@ -55,6 +58,7 @@ export function buildLauncherCmd(inputs: LauncherInputs): string {
   const stderrLog = daemonStderrPath(inputs.profile);
   const stdoutLog = daemonStdoutPath(inputs.profile);
   const stopFlag = daemonStopFlagPath(inputs.profile);
+  const stateFile = daemonServiceStatePath(inputs.profile);
   const extraLines = Object.entries(inputs.extraEnv ?? {})
     .filter(([, v]) => v.length > 0)
     .map(([k, v]) => cmdSetEnv(k, v));
@@ -64,7 +68,9 @@ export function buildLauncherCmd(inputs: LauncherInputs): string {
     `set "PATH=${inputs.envPath}"`,
     ...extraLines,
     'set "LARK_BRIDGE_DAEMON=1"',
+    buildDisabledStateCheckCmd(stateFile),
     ':bridge_loop',
+    buildDisabledStateCheckCmd(stateFile),
     `if exist "${stopFlag}" del "${stopFlag}" & exit /b 0`,
     `echo [%date% %time%] starting bridge >> "${stderrLog}"`,
     `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run --profile "${inputs.profile}" --skip-check-lark-cli >> "${stdoutLog}" 2>> "${stderrLog}"`,
@@ -101,6 +107,7 @@ async function writeLauncherCmd(profile: string): Promise<void> {
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
   }
+  const launcherPath = windowsLauncherCmdPath(profile);
   const content = buildLauncherCmd({
     nodePath: process.execPath,
     bridgeEntryPath,
@@ -109,10 +116,10 @@ async function writeLauncherCmd(profile: string): Promise<void> {
     channelHome: paths.rootDir,
     extraEnv: daemonExtraEnv(),
   });
-  const cmdPath = windowsLauncherCmdPath(profile);
-  await mkdir(dirname(cmdPath), { recursive: true });
+  await mkdir(dirname(launcherPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
-  await writeFile(cmdPath, content, 'utf8');
+  await writeFile(launcherPath, content, 'utf8');
+  await writeFile(launchHiddenVbsPath(profile), startup.buildLaunchHiddenVbs(launcherPath), 'utf8');
 }
 
 interface SchtasksResult {
@@ -150,7 +157,7 @@ export async function installTask(profile: string): Promise<SchtasksResult> {
     '/TN',
     windowsTaskName(profile),
     '/TR',
-    `"${windowsLauncherCmdPath(profile)}"`,
+    `wscript.exe //B //Nologo "${launchHiddenVbsPath(profile)}"`,
   ]);
   if (!main.ok) {
     // schtasks often fails on managed PCs (access denied, GPO). Fall back to Startup folder.
@@ -245,6 +252,9 @@ export async function deleteTask(profile: string): Promise<SchtasksResult> {
   // Remove the launcher script too; best-effort.
   if (existsSync(windowsLauncherCmdPath(profile))) {
     await rm(windowsLauncherCmdPath(profile), { force: true });
+  }
+  if (existsSync(launchHiddenVbsPath(profile))) {
+    await rm(launchHiddenVbsPath(profile), { force: true });
   }
   if (existsSync(windowsWatchdogCmdPath(profile))) {
     await rm(windowsWatchdogCmdPath(profile), { force: true });

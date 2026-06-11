@@ -399,7 +399,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     appId: cfg.accounts.app.id,
     procId: controls.processId,
   });
-  console.log('正在监听消息。按 Ctrl+C 退出。\n');
+  if (process.env.LARK_BRIDGE_DAEMON !== '1') {
+    console.log('正在监听消息。按 Ctrl+C 退出。\n');
+  }
 
   // App-level keepalive: 15s probe + wake-up detection + HTTP reachability.
   // Defense-in-depth — the SDK's pingTimeout watchdog handles half-dead WS,

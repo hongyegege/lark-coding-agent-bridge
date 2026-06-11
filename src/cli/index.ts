@@ -23,6 +23,7 @@ import {
   runServiceStop,
   runServiceUnregister,
 } from './commands/service';
+import { runShortcutsInstall } from './commands/shortcuts';
 import { runStart } from './commands/start';
 
 const program = new Command();
@@ -202,6 +203,18 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .action(async (opts: { profile?: string }) => {
     await runServiceUnregister({ profile: opts.profile });
+  });
+
+const shortcuts = program
+  .command('shortcuts')
+  .description('Install desktop shortcuts for enabling/disabling the Feishu bot (Windows)');
+
+shortcuts
+  .command('install')
+  .description('Create desktop shortcuts: 启用飞书 Bot / 停用飞书 Bot')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: { profile?: string }) => {
+    await runShortcutsInstall({ profile: opts.profile });
   });
 
 const secrets = program
